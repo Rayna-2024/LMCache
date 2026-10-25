@@ -4,13 +4,13 @@ Serde helper utilities for the distributed storage controllers.
 """
 
 # Standard
+from dataclasses import replace
 import os
 
 # Third Party
 import torch
 
 # First Party
-from lmcache.v1.cache_identity import ObjectKeyIdentity
 from lmcache.v1.distributed.api import MemoryLayoutDesc, ObjectKey
 from lmcache.v1.distributed.serde.base import SerdeProcessor
 
@@ -47,12 +47,10 @@ def make_temp_key(original_key: ObjectKey) -> ObjectKey:
     Args:
         original_key: The original ObjectKey to derive from.
     """
-    return ObjectKey(
-        identity=ObjectKeyIdentity(
+    return replace(
+        original_key,
+        identity=replace(
+            original_key.identity,
             chunk_hash=original_key.identity.chunk_hash + os.urandom(16),
-            model_name=original_key.identity.model_name,
-            kv_rank=original_key.identity.kv_rank,
-            object_group_id=original_key.identity.object_group_id,
-            cache_salt=original_key.identity.cache_salt,
-        )
+        ),
     )

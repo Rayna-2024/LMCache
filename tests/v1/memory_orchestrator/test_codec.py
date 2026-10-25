@@ -24,7 +24,9 @@ def test_shared_object_key_and_layout_round_trip() -> None:
             kv_rank=37,
             object_group_id=11,
             cache_salt="tenant-a",
-        )
+            tags={"z": "last", "a": "first"},
+        ),
+        xattrs={"owner": "worker", "priority": 2},
     )
     entry = WriteRequest(
         key,
@@ -38,8 +40,8 @@ def test_shared_object_key_and_layout_round_trip() -> None:
     restored = pb2.WriteEntry.FromString(encoded.SerializeToString())
     decoded = codec.write_request_from_proto(restored)
     assert decoded == entry
-    assert decoded.key.identity == key.identity
+    assert decoded.key.xattrs == key.xattrs
     read = ReadRequest(entry.key, 2)
     decoded_read = codec.read_request_from_proto(codec.read_request_to_proto(read))
     assert decoded_read == read
-    assert decoded_read.key.identity == key.identity
+    assert decoded_read.key.xattrs == key.xattrs

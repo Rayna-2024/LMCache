@@ -126,6 +126,13 @@ The pre-commit config includes Rust hooks, so the run fails when `cargo`,
 building `io-uring`). For non-Rust changes, run
 `SKIP=rust-fmt,rust-clippy pre-commit run --all-files`.
 
+System-language hooks invoke `python3` from `PATH`, so activate the Python
+3.12+ validation environment before running pre-commit; macOS `/usr/bin/python3`
+may still be 3.9 and cannot execute the device-check hook. The mypy hook also
+requires a discoverable Python 3.12 interpreter. After a packed-token rebase,
+new IPC fixtures must use `IPCCacheServerKey.from_token_ids(...)` or explicitly
+pack `token_bytes`; replacing the removed `token_ids` field is invalid.
+
 C++/CUDA files use clang-format (Google style, 80-col). Rust code in `rust/` uses `cargo fmt` and `cargo clippy`.
 
 All Python files require an `# SPDX-License-Identifier: Apache-2.0` header as the first line.
@@ -220,3 +227,10 @@ canonical standard; this file intentionally does not duplicate it.
 
 When asked to review a PR, use the `pr-review` skill; before creating a PR,
 self-check with the `pre-pr-check` skill (both under `.claude/skills/`).
+
+### macOS DAX range validation
+
+On macOS with a 16 KiB mmap allocation granularity,
+`test_dax_one_device_backs_disjoint_ranges` uses a 4 KiB arena offset that
+`mmap` rejects with `EINVAL`. Validate that test on Linux; a macOS CPU run
+excluding it does not establish DAX device/range correctness.
