@@ -64,8 +64,8 @@ def test_backend_names_recovery_and_trace(salt: str) -> None:
         assert recovered == key
         assert recovered.identity == key.identity
     temp = make_temp_key(key)
-    assert replace(temp.identity, chunk_hash=key.identity.chunk_hash) == key.identity
-    assert temp.identity.chunk_hash != key.identity.chunk_hash
+    assert replace(temp.identity, chunk_hash=key.chunk_hash) == key.identity
+    assert temp.chunk_hash != key.chunk_hash
     assert temp.xattrs == key.xattrs
     traced = decode_value(encode_value(key))
     assert traced == key
@@ -132,11 +132,7 @@ int main(int argc, char** argv) {
             result = subprocess.check_output(
                 [str(executable), wire], text=True
             ).splitlines()
-            assert result == [
-                _object_key_to_filename(key),
-                wire,
-                key.identity.chunk_hash.hex(),
-            ]
+            assert result == [_object_key_to_filename(key), wire, key.chunk_hash.hex()]
 
 
 def test_bigtable_extended_unsalted_cannot_alias_legacy_salt() -> None:

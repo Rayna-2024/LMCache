@@ -231,13 +231,10 @@ def test_prefetch_preserves_tags_on_every_rank_and_object_group(
         [spec] = storage.submitted
         assert len(spec.key_groups) == 4
         keys = [key for row in spec.key_groups for key in row.keys]
-        assert {key.identity.object_group_id for key in keys} == {0, 1}
-        assert len({key.identity.kv_rank for key in keys}) == 2
+        assert {key.object_group_id for key in keys} == {0, 1}
+        assert len({key.kv_rank for key in keys}) == 2
         assert all(dict(key.identity.tags) == tags for key in keys)
-        assert all(
-            key.identity.chunk_hash == _store_key(tags).identity.chunk_hash
-            for key in keys
-        )
+        assert all(key.chunk_hash == _store_key(tags).chunk_hash for key in keys)
 
 
 @pytest.mark.parametrize("tags", [{"": "bad"}, {"adapter": 1}, {"adapter": None}])

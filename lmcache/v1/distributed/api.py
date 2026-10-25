@@ -8,7 +8,7 @@ Could be implemented by native code in the future
 
 # Standard
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal, get_args
 import enum
 
@@ -162,28 +162,125 @@ class MemoryTags:
     """Where the bytes reside relative to this host."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class ObjectKey:
     """
     The unique identifier for an object in the distributed storage manager
     """
 
     identity: ObjectKeyIdentity
-    """Immutable matching fields shared with internal wire messages."""
     xattrs: dict[str, Any] = field(default_factory=dict, compare=False)
+
+    def __init__(
+        self,
+        chunk_hash: bytes | None = None,
+        model_name: str | None = None,
+        kv_rank: int | None = None,
+        object_group_id: int | None = None,
+        cache_salt: str | None = None,
+        *,
+        identity: ObjectKeyIdentity | None = None,
+        tags: Mapping[str, str] | None = None,
+        xattrs: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Build a key from its identity or the existing flat constructor.
+
+        Explicit flat fields override the supplied identity. This also retains
+        ``dataclasses.replace(key, object_group_id=...)`` and other flat field
+        replacements used by existing consumers.
+
+        Args:
+            chunk_hash: Content hash; required without ``identity``.
+            model_name: Model name; required without ``identity``.
+            kv_rank: Packed KV rank; required without ``identity``.
+            object_group_id: Object group; defaults to 0 without an identity.
+            cache_salt: Isolation salt; defaults to empty without an identity.
+            identity: Immutable identity providing fields not supplied explicitly.
+            tags: Additional matching dimensions for the flat constructor.
+            xattrs: Per-object mutable metadata, copied on construction.
+
+        Raises:
+            TypeError: A required flat field is missing without ``identity``.
+            ValueError: An identity field violates its invariant.
+        """
+        if identity is None:
+            if chunk_hash is None or model_name is None or kv_rank is None:
+                raise TypeError("chunk_hash, model_name and kv_rank are required")
+            identity = ObjectKeyIdentity(
+                chunk_hash=chunk_hash,
+                model_name=model_name,
+                kv_rank=kv_rank,
+                object_group_id=object_group_id if object_group_id is not None else 0,
+                cache_salt=cache_salt if cache_salt is not None else "",
+                tags=tags if tags is not None else {},
+            )
+        elif (
+            chunk_hash is not None
+            or model_name is not None
+            or kv_rank is not None
+            or object_group_id is not None
+            or cache_salt is not None
+            or tags is not None
+        ):
+            identity = replace(
+                identity,
+                chunk_hash=chunk_hash
+                if chunk_hash is not None
+                else identity.chunk_hash,
+                model_name=model_name
+                if model_name is not None
+                else identity.model_name,
+                kv_rank=kv_rank if kv_rank is not None else identity.kv_rank,
+                object_group_id=(
+                    object_group_id
+                    if object_group_id is not None
+                    else identity.object_group_id
+                ),
+                cache_salt=cache_salt
+                if cache_salt is not None
+                else identity.cache_salt,
+                tags=tags if tags is not None else identity.tags,
+            )
+        object.__setattr__(self, "identity", identity)
+        object.__setattr__(self, "xattrs", dict(xattrs) if xattrs is not None else {})
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "xattrs", dict(self.xattrs))
 
+    @property
+    def chunk_hash(self) -> bytes:
+        """Read chunk_hash from the identity."""
+        return self.identity.chunk_hash
+
+    @property
+    def model_name(self) -> str:
+        """Read model_name from the identity."""
+        return self.identity.model_name
+
+    @property
+    def cache_salt(self) -> str:
+        """Read cache_salt from the identity."""
+        return self.identity.cache_salt
+
+    @property
+    def kv_rank(self) -> int:
+        """Read kv_rank from the identity."""
+        return self.identity.kv_rank
+
+    @property
+    def object_group_id(self) -> int:
+        """Read object_group_id from the identity."""
+        return self.identity.object_group_id
+
     def to_encoded_object_key(self) -> "EncodedObjectKey":
         """Return the JSON-safe :class:`EncodedObjectKey` identity projection."""
         return EncodedObjectKey(
-            model_name=self.identity.model_name,
-            cache_salt=self.identity.cache_salt,
+            model_name=self.model_name,
+            cache_salt=self.cache_salt,
             tags=self.identity.tags,
-            chunk_hash_hex=self.identity.chunk_hash.hex(),
-            kv_rank=self.identity.kv_rank,
-            object_group_id=self.identity.object_group_id,
+            chunk_hash_hex=self.chunk_hash.hex(),
+            kv_rank=self.kv_rank,
+            object_group_id=self.object_group_id,
         )
 
     @staticmethod

@@ -90,7 +90,7 @@ def test_identity_transport_and_object_expansion() -> None:
         groups = ipc_key_to_object_keys(decoded, [b"1234", b"5678"], [0, 1])
         assert len(groups) == 2 and all(len(group) == 4 for group in groups)
         for key in (key for group in groups for key in group):
-            assert key.identity.model_name == ipc.model_name
+            assert key.model_name == ipc.model_name
             assert key.identity.tags == get_request_tags(ipc.request_configs)
             assert key.xattrs == {"owner": "alice", "priority": 1}
             encoded = key.to_encoded_object_key()

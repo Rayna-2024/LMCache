@@ -58,8 +58,8 @@ def _group_keys_by_shape(
     for key in keys:
         groups[
             (
-                key.identity.model_name,
-                key.identity.kv_rank,
+                key.model_name,
+                key.kv_rank,
                 tuple(key.identity.tags.items()),
             )
         ].append(key)
@@ -705,7 +705,7 @@ class StoreController(StorageControllerInterface):
                         "key_count": len(successful_keys),
                         "total_bytes": total_bytes,
                         "key_count_per_salt": Counter(
-                            k.identity.cache_salt for k in successful_keys
+                            k.cache_salt for k in successful_keys
                         ),
                     },
                 )
@@ -778,9 +778,7 @@ class StoreController(StorageControllerInterface):
                         **completion_meta,
                         "succeeded_count": len(task.keys),
                         "failed_count": 0,
-                        "key_count_per_salt": Counter(
-                            k.identity.cache_salt for k in task.keys
-                        ),
+                        "key_count_per_salt": Counter(k.cache_salt for k in task.keys),
                     },
                 )
             )

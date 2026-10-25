@@ -20,8 +20,7 @@ and string values; xattrs preserve their request-config values.
 
 ``ObjectKeyIdentity`` contains ``chunk_hash``, ``kv_rank``, ``model_name``,
 ``object_group_id``, ``cache_salt`` and immutable, name-sorted ``tags``.
-Consumers read matching fields through ``key.identity``, for example
-``key.identity.model_name``.
+Read-only key properties forward reads to the identity without duplicating it.
 
 ``xattrs`` is mutable, copied per object and excluded from equality/hashing.
 An L1 consumer can delete one attribute directly:
@@ -42,19 +41,12 @@ L2 adapters use ``lmcache.v1.distributed.key_codec`` for shared storage names,
 filenames and recovery. Untagged names remain unchanged; sorted tags use a
 reversible token. Extended FS filenames must fit within 255 UTF-8 bytes.
 
-Construct keys with ``ObjectKey(identity=identity)``, where ``identity`` is an
-``ObjectKeyIdentity``. Update matching fields by replacing the nested identity:
-
-.. code-block:: python
-
-   from dataclasses import replace
-
-   updated = replace(key, identity=replace(key.identity, object_group_id=1))
-
-``EncodedObjectKey`` retains flat HTTP/JSON fields, with ``chunk_hash_hex``
-instead of bytes and an optional ``tags`` map. Internal P2P services upgrade
-together. IPC clients retain the dev message shape. This API does not activate
-precision isolation in an engine integration.
+``ObjectKey`` retains the existing flat constructor and
+``dataclasses.replace(key, object_group_id=...)`` calls. ``EncodedObjectKey``
+retains flat HTTP/JSON fields, with ``chunk_hash_hex`` instead of bytes and an
+optional ``tags`` map. Internal P2P services upgrade together. IPC clients retain
+the dev message shape. This API does not activate precision isolation in an
+engine integration.
 
 Token-addressed control operations
 ==========================================

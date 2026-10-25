@@ -40,20 +40,20 @@ def format_storage_key(
         The formatted storage name. Tag order does not affect the result.
     """
     token = key.identity.tags_token()
-    if not key.identity.cache_salt and not token and template.endswith("@{salt}"):
+    if not key.cache_salt and not token and template.endswith("@{salt}"):
         template = template[:-7]
-    suffix = f"@{key.identity.cache_salt}" if key.identity.cache_salt else ""
+    suffix = f"@{key.cache_salt}" if key.cache_salt else ""
     if token:
-        suffix = f"@{key.identity.cache_salt}@{token}"
-    chunk_hex = key.identity.chunk_hash.hex()
+        suffix = f"@{key.cache_salt}@{token}"
+    chunk_hex = key.chunk_hash.hex()
     result = template.format(
-        model=key.identity.model_name.replace("/", model_separator) + model_suffix,
-        quoted_model=urllib.parse.quote(key.identity.model_name, safe=""),
-        rank=format(key.identity.kv_rank, rank_format),
-        group=f"{key.identity.object_group_id:x}",
+        model=key.model_name.replace("/", model_separator) + model_suffix,
+        quoted_model=urllib.parse.quote(key.model_name, safe=""),
+        rank=format(key.kv_rank, rank_format),
+        group=f"{key.object_group_id:x}",
         hash=chunk_hex,
         hash_prefix=chunk_hex[:4],
-        salt=key.identity.cache_salt,
+        salt=key.cache_salt,
         suffix=suffix,
     )
     if "{suffix}" not in template and token:
@@ -63,7 +63,7 @@ def format_storage_key(
 
 def storage_shard(key: ObjectKey) -> tuple[str, str]:
     """Return two directory components from the first four hash hex digits."""
-    chunk_hex = key.identity.chunk_hash.hex()
+    chunk_hex = key.chunk_hash.hex()
     return chunk_hex[:2], chunk_hex[2:4]
 
 

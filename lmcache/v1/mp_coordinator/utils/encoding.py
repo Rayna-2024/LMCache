@@ -22,11 +22,11 @@ The optional token preserves additional matching tags."""
 def encode_key(key: ObjectKey) -> EncodedKey:
     """Flatten a key for a capture, fields in declaration order."""
     fields = (
-        key.identity.chunk_hash,
-        key.identity.model_name,
-        key.identity.kv_rank,
-        key.identity.object_group_id,
-        key.identity.cache_salt,
+        key.chunk_hash,
+        key.model_name,
+        key.kv_rank,
+        key.object_group_id,
+        key.cache_salt,
     )
     token = key.identity.tags_token()
     return (*fields, token) if token else fields
@@ -40,7 +40,7 @@ def decode_key(encoded: object) -> ObjectKey:
             artifact -- a sequence, not necessarily a tuple.
 
     Returns:
-        The key, validated by ``ObjectKeyIdentity``.
+        The key, validated by ``ObjectKey`` itself.
 
     Raises:
         ValueError: If the sequence has an unsupported field count or a field

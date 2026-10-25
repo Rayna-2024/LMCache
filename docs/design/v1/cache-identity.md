@@ -36,19 +36,11 @@ owner = key.xattrs.pop("owner", None)
 ```
 
 Changing xattrs does not create another cache entry. Model/salt validation and
-nonnegative object-group validation remain on object identity. Consumers read
-matching fields through `key.identity`, for example `key.identity.model_name`.
-Construct a key with `ObjectKey(identity=identity)`, where `identity` is an
-`ObjectKeyIdentity`. Update matching fields by replacing that nested identity:
-
-```python
-from dataclasses import replace
-
-updated = replace(key, identity=replace(key.identity, object_group_id=1))
-```
-
-HTTP `EncodedObjectKey` fields remain flat, with an optional `tags` map; no
-nested identity wrapper is added.
+nonnegative object-group validation remain on object identity. Read-only key
+properties forward field reads without duplicating identity state. The existing
+flat `ObjectKey(chunk_hash, model_name, kv_rank, ...)` constructor and flat
+`dataclasses.replace` overrides remain supported. HTTP `EncodedObjectKey` fields
+remain flat, with an optional `tags` map; no nested identity wrapper is added.
 
 ## Server state and storage boundaries
 
