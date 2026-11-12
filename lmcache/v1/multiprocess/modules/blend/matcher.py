@@ -55,7 +55,8 @@ class BlendTokenRangeMatcher:
     ) -> int:
         """Index a stored sequence's non-overlapping chunks. Thread-safe.
 
-        Already-indexed token hashes are skipped; under ``dedup_content``,
+        Already-indexed token hashes refresh their probe slot without adding
+        a compact ID; under ``dedup_content``,
         already-indexed poly hashes are skipped too (same text behind
         different prefixes is indexed once).
 
@@ -78,7 +79,13 @@ class BlendTokenRangeMatcher:
             new_idxs: list[int] = []
             batch_poly: set[int] = set()
             for i in range(n):
-                if token_hashes[i] in self._token_hash_to_compact_id:
+                existing_id = self._token_hash_to_compact_id.get(token_hashes[i])
+                if existing_id is not None:
+                    # Another prefix may have shadowed this content's probe
+                    # slot. A new store of a known source makes that source
+                    # the current candidate again, without allocating an ID.
+                    slot = int(chunk_hashes[i]) & int(self._mask)
+                    self._table_id[slot] = existing_id
                     continue
                 if self._dedup_content:
                     poly_hash = int(chunk_hashes[i])
@@ -148,8 +155,8 @@ class BlendTokenRangeMatcher:
         full poly-hash verify that rejects bucket collisions. Thread-safe.
 
         Returns:
-            One result per unique reused chunk (cur_st = first query
-            position, old_st = stored position); empty if the query is
+            One result per matched query position (cur_st = query position,
+            old_st = stored position); empty if the query is
             shorter than one chunk or nothing matched.
         """
         if len(token_ids) < self.chunk_size:
@@ -168,13 +175,10 @@ class BlendTokenRangeMatcher:
             cids_at_pos = self._table_id[rolling & self._mask]
             hit_positions = np.nonzero(cids_at_pos >= 0)[0]
 
-            seen_cids: set[int] = set()
             results: list[CBMatchResult] = []
             for pos in hit_positions:
                 pos = int(pos)
                 cid = int(cids_at_pos[pos])
-                if cid in seen_cids:
-                    continue
                 if int(rolling[pos]) != self._chunk_poly_hash[cid]:
                     continue  # bucket-only collision
                 th = self._chunk_token_hash[cid]
@@ -183,7 +187,6 @@ class BlendTokenRangeMatcher:
                 old_st = self._token_hash_to_start.get(th)
                 if old_st is None:
                     continue
-                seen_cids.add(cid)
                 results.append(
                     CBMatchResult(
                         old_st=old_st,

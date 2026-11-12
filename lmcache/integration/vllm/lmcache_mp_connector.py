@@ -795,7 +795,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             # Banner from the scheduler role only, so tensor-parallel
             # deployments print it once rather than once per worker.
             print_banner_once(sys.stderr)
-            self.scheduler_adapter = LMCacheMPSchedulerAdapter(
+            self.scheduler_adapter = self.create_lmcache_mp_scheduler_adapter(
                 server_urls=server_urls,
                 context=zmq_context,
                 model_name=cache_model_name,
@@ -900,6 +900,12 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
     @property
     def role(self) -> KVConnectorRole:
         return self._role
+
+    def create_lmcache_mp_scheduler_adapter(
+        self, **adapter_kwargs: Any
+    ) -> LMCacheMPSchedulerAdapter:
+        """Build the scheduler adapter; specialized connectors may override it."""
+        return LMCacheMPSchedulerAdapter(**adapter_kwargs)
 
     @property
     def transfer_intermediate_tensors(self) -> bool:
@@ -1346,6 +1352,19 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             if self.lazy_offload:
                 self._lazy_offload_manager.bind_block_pool(gpu_block_pool)
 
+    @staticmethod
+    def _skip_request_load(request: "Request") -> bool:
+        """Honor explicit store-only precomputation without skipping stores.
+
+        ``kv_transfer_params["lmcache.skip_load"]`` must be a boolean. This
+        also suppresses eager lookup, so no unused prefetch locks are created.
+        """
+        params = getattr(request, "kv_transfer_params", None) or {}
+        skip = params.get("lmcache.skip_load", False)
+        if not isinstance(skip, bool):
+            raise ValueError("lmcache.skip_load must be a boolean")
+        return skip
+
     def get_num_new_matched_tokens(
         self,
         request: "Request",
@@ -1379,6 +1398,9 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             into account.
         """
         tracker = self._get_or_create_request_tracker(request)
+        if self._skip_request_load(request):
+            tracker.state = LMCacheMPRequestState.BYPASS_LMCACHE
+            return 0, False
 
         # A failed asynchronous load is bypassed until vLLM admits the request
         # for local computation via update_state_after_alloc().  The scheduler
@@ -1551,6 +1573,8 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             request (Request): The request object.
         """
         if self.role != KVConnectorRole.SCHEDULER:
+            return
+        if self._skip_request_load(request):
             return
         if not self._eager_prefetch or request.resumable:
             return

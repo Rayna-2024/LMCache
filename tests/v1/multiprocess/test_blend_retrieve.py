@@ -419,6 +419,65 @@ def test_reason_table():
     assert actual == expected
 
 
+@pytest.mark.parametrize(
+    ("cur_st", "cur_ed", "block_ids", "reason", "scatter_ran"),
+    [
+        (128, 256, [7], "matches_beyond_alloc", True),
+        (64, 192, [7], "matches_straddle_alloc", False),
+    ],
+)
+def test_retrieve_partial_allocation_reason(
+    monkeypatch, cur_st, cur_ed, block_ids, reason, scatter_ran
+):
+    """The actual retrieve handler gates partially allocated destinations."""
+    # Standard
+    from contextlib import nullcontext
+
+    # Third Party
+    import torch
+
+    # First Party
+    from lmcache.v1.multiprocess.custom_types import CBMatchResult, IPCCacheServerKey
+
+    engine = MagicMock(spec=BlendModule)
+    engine._ctx = MagicMock()
+    engine._transfer_module = MagicMock()
+    engine._event_bus = MagicMock()
+    engine._cb_rope_state = {1: object()}
+    engine._cb_applied_match_ranges = {}
+    engine._ctx.chunk_size = 128
+    engine._cb_staged_groups.return_value = (
+        SimpleNamespace(blend_gids=[0]),
+        [0],
+    )
+    gpu_context = MagicMock()
+    gpu_context.device = torch.device("cpu")
+    gpu_context.kv_layer_groups_manager.kernel_groups = [
+        SimpleNamespace(engine_group_idx=0, tokens_per_block=128)
+    ]
+    entry = SimpleNamespace(cache_context=gpu_context, event_backend=MagicMock())
+    entry.event_backend.export_event.return_value = b"done"
+    engine._transfer_module.get_and_touch_context_entry.return_value = entry
+    monkeypatch.setattr(retrieve_mod.torch_dev, "device", lambda *_: nullcontext())
+    monkeypatch.setattr(retrieve_mod.torch_dev, "stream", lambda *_: nullcontext())
+    key = IPCCacheServerKey.from_token_ids(
+        "qwen3", 1, 0, range(256), end=256, request_id="r"
+    )
+    match = CBMatchResult(0, cur_ed - cur_st, cur_st, cur_ed, b"hit")
+
+    done, ran = BlendModule.cb_retrieve_pre_computed(
+        engine, key, [match], [block_ids], 1, b"before"
+    )
+
+    assert done == b"done"
+    assert ran is scatter_ran
+    published = engine._event_bus.publish.call_args_list
+    if reason == "matches_straddle_alloc":
+        assert any(call.args[0].metadata.get("reason") == reason for call in published)
+    else:
+        assert all(call.args[0].metadata.get("reason") != reason for call in published)
+
+
 # ---------------------------------------------------------------------------
 # L2: obj_keys cache lifecycle
 # ---------------------------------------------------------------------------
@@ -1003,3 +1062,33 @@ def test_sparse_classify_unstaged_but_found_chunk_takes_no_strike():
     eng._ctx.storage_manager.finish_read_prefetched.assert_not_called()
     # "gone" is absent from every tier -> the stale path, unchanged.
     assert eng._stale_strike == {b"gone": 1}
+
+
+@pytest.mark.parametrize("owned", [False, True])
+def test_repeated_source_releases_one_lock_after_all_destinations(owned: bool) -> None:
+    """Sparse prefetch takes one lock even if two matches read the same object."""
+    matches = [_release_match(0), _release_match(1)]
+    keys = ["shared-g0", "shared-g1"] * 2
+    owners = {"shared-g0": 0, "shared-g1": 1} if owned else None
+    stream = MagicMock()
+    with patch.object(retrieve_mod, "submit_callback_to_stream") as cb:
+        count = BlendModule._release_applied_read_locks(
+            MagicMock(), matches, matches[:1], keys, 2, stream, owners
+        )
+        assert count == 0
+        cb.assert_not_called()
+        count = BlendModule._release_applied_read_locks(
+            MagicMock(), matches, matches, keys, 2, stream, owners
+        )
+        assert count == 2
+        cb.assert_called_once()
+        if owned:
+            assert cb.call_args.args[1:] == (
+                "finish_read_by_owner",
+                [(0, ["shared-g0"]), (1, ["shared-g1"])],
+            )
+        else:
+            assert cb.call_args.args[1:] == (
+                "finish_read_prefetched",
+                ["shared-g0", "shared-g1"],
+            )

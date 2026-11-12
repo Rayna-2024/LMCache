@@ -22,6 +22,7 @@ from lmcache.integration.vllm.utils import (
     extract_request_configs_from_request,
 )
 from lmcache.integration.vllm.vllm_multi_process_adapter import LoadStoreOp
+from lmcache.v1.multiprocess.custom_types import CBMatchResult, IPCCacheServerKey
 from lmcache.v1.multiprocess.group_view import slice_block_ids_per_group
 from lmcache.v1.multiprocess.token_codec import (
     TOKEN_STRIDE,
@@ -492,17 +493,27 @@ class LMCacheMPRequestMetadata:
         return None
 
 
+@dataclass
+class BlendScatterTask:
+    """One ready, fully allocated CacheBlend scatter for a forward step."""
+
+    key: IPCCacheServerKey
+    matches: list[CBMatchResult]
+    block_ids: list[list[int]]
+
+
 class LMCacheMPConnectorMetadata(KVConnectorMetadata):
     def __init__(self):
         super().__init__()
         self.requests: list[LMCacheMPRequestMetadata] = []
         self.need_flush_before_forward: bool = False
+        self.blend_scatter_tasks: list[BlendScatterTask] = []
 
     def add_request_metadata(self, request_metadata: LMCacheMPRequestMetadata):
         self.requests.append(request_metadata)
 
     def __len__(self):
-        return len(self.requests)
+        return len(self.requests) + len(self.blend_scatter_tasks)
 
     # For debugging
     def __str__(self):

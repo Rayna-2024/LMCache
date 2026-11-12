@@ -229,12 +229,11 @@ def match_strided(
             return []
 
         results: list[CBMatchResult] = []
-        seen_cids: set[int] = set()
         mask = int(matcher._mask)
         for q_pos in range(start_pos, n_positions, stride):
             r = int(rolling[q_pos])
             cid = int(matcher._table_id[r & mask])
-            if cid < 0 or cid in seen_cids:
+            if cid < 0:
                 continue
             if r != matcher._chunk_poly_hash[cid]:
                 continue  # bucket collision
@@ -244,7 +243,6 @@ def match_strided(
             old_st = matcher._token_hash_to_start.get(th)
             if old_st is None:
                 continue
-            seen_cids.add(cid)
             results.append(
                 CBMatchResult(
                     old_st=old_st,
@@ -959,3 +957,31 @@ def _parse_mp(argv: list[str]) -> MPServerConfig:
 )
 def test_enable_dedup_content_flag(argv, expected):
     assert _parse_mp(argv).enable_dedup_content is expected
+
+
+def test_repeated_chunk_preserves_every_query_destination() -> None:
+    """A prefix occurrence must not hide later reuse of the same source KV."""
+    matcher = BlendTokenRangeMatcher(chunk_size=CHUNK_SIZE)
+    chunk = _chunk(91)
+    _register(matcher, chunk, [9101])
+    query = chunk + _chunk(92) + chunk + chunk
+    matches = matcher.match_sub_sequence(query)
+    assert [r.cur_st for r in matches] == [0, 2 * CHUNK_SIZE, 3 * CHUNK_SIZE]
+    assert len({r.hash for r in matches}) == 1
+    assert all(r.old_st == 0 for r in matches)
+    assert sum(r.cur_ed - r.cur_st for r in current_lookup(matcher, query)) == (
+        3 * CHUNK_SIZE
+    )
+
+
+def test_restore_known_source_after_another_prefix_shadowed_it() -> None:
+    """Re-prewarming a known document must restore its lookup candidate."""
+    matcher = BlendTokenRangeMatcher(chunk_size=CHUNK_SIZE)
+    chunk = _chunk(93)
+    source = ObjectKey.IntHash2Bytes(9301)
+    other_prefix = ObjectKey.IntHash2Bytes(9302)
+    assert matcher.on_new_token_hashes(chunk, [source]) == 1
+    assert matcher.on_new_token_hashes(chunk, [other_prefix]) == 1
+    assert matcher.match_sub_sequence(chunk)[0].hash == other_prefix
+    assert matcher.on_new_token_hashes(chunk, [source]) == 0
+    assert matcher.match_sub_sequence(chunk)[0].hash == source

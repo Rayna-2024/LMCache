@@ -541,12 +541,24 @@ class RetrieveMixin:
             The number of object keys whose release was enqueued.
         """
         applied_ids = {id(r) for r in applied}
-        release_keys = [
+        # Sparse prefetch reserves one lock per source key, even when that
+        # source populates several destination ranges. Keep it until all of
+        # those destinations have consumed it.
+        pending_keys = {
             all_obj_keys[i * n_read + g]
             for i, r in enumerate(cb_match_result)
-            if id(r) in applied_ids
+            if id(r) not in applied_ids
             for g in range(n_read)
-        ]
+        }
+        release_keys = list(
+            dict.fromkeys(
+                all_obj_keys[i * n_read + g]
+                for i, r in enumerate(cb_match_result)
+                if id(r) in applied_ids
+                for g in range(n_read)
+                if all_obj_keys[i * n_read + g] not in pending_keys
+            )
+        )
         if release_keys:
             if l1_owners is None:
                 submit_callback_to_stream(
@@ -895,8 +907,12 @@ class RetrieveMixin:
             # cb.scatter opens mid-try; track it so a failure closes the span.
             scatter_open = False
             try:
+                # The storage API returns one object per unique key. Expand
+                # back to match order so repeated content can be scattered
+                # into each destination without taking extra source locks.
+                unique_obj_keys = list(dict.fromkeys(all_obj_keys))
                 with self._ctx.storage_manager.read_prefetched_results(
-                    all_obj_keys, l1_owners=l1_owners
+                    unique_obj_keys, l1_owners=l1_owners
                 ) as memory_objs:
                     _stage_ms["fetch"] = (time.perf_counter() - _stage_t) * 1000
                     if memory_objs is None:
@@ -927,6 +943,13 @@ class RetrieveMixin:
                             event_backend.export_event(event, gpu_context.device),
                             False,
                         )
+
+                    if len(memory_objs) != len(unique_obj_keys):
+                        raise ValueError("CB retrieve: incomplete source object list")
+                    objects_by_key = dict(
+                        zip(unique_obj_keys, memory_objs, strict=True)
+                    )
+                    memory_objs = [objects_by_key[k] for k in all_obj_keys]
 
                     # Per-token scatter handles any cur_st. Each match owns n_read
                     # consecutive memory objects (chunk-major).

@@ -858,3 +858,129 @@ def test_full_prompt_hit_stays_chunk_aligned_under_prefix_replay(
             assert kwargs["extra_ranges"] == ((8, 12),)
     finally:
         scheduler.shutdown()
+
+
+@pytest.mark.parametrize("eager_prefetch", [False, True])
+def test_store_only_request_skips_lookup_but_keeps_store(
+    mock_io: SimpleNamespace, eager_prefetch: bool
+) -> None:
+    """Document precomputation must never recursively blend cached documents."""
+    config = _config(
+        KVTransferConfig(
+            kv_connector="LMCacheMPConnector",
+            kv_role="kv_both",
+            kv_connector_extra_config={"lmcache.mp.eager_prefetch": eager_prefetch},
+        )
+    )
+    connector = LMCacheMPConnector(config, KVConnectorRole.SCHEDULER)
+    request = _request()
+    request.kv_transfer_params = {"lmcache.skip_load": True}
+    try:
+        connector.on_new_request(request)
+        assert connector.get_num_new_matched_tokens(request, 0) == (0, False)
+        mock_io.scheduler.maybe_submit_lookup_request.assert_not_called()
+        connector.update_state_after_alloc(
+            request, MagicMock(get_block_ids=lambda: ([1, 2, 3],)), 0
+        )
+        metadata = connector.build_connector_meta(
+            _schedule(num_tokens=12, block_ids=([1, 2, 3],), new=True)
+        )
+        assert [(m.direction, m.op.start, m.op.end) for m in metadata.requests] == [
+            ("STORE", 0, 12)
+        ]
+    finally:
+        connector.shutdown()
+
+
+@pytest.mark.parametrize("value", ["false", "true", 0, 1, None])
+def test_store_only_request_rejects_non_boolean(
+    mock_io: SimpleNamespace, value: object
+) -> None:
+    """A malformed flag must not silently change the computation path."""
+    connector = LMCacheMPConnector(
+        _config(KVTransferConfig(kv_connector="LMCacheMPConnector", kv_role="kv_both")),
+        KVConnectorRole.SCHEDULER,
+    )
+    request = _request()
+    request.kv_transfer_params = {"lmcache.skip_load": value}
+    try:
+        with pytest.raises(ValueError, match="skip_load must be a boolean"):
+            connector.get_num_new_matched_tokens(request, 0)
+    finally:
+        connector.shutdown()
+
+
+@pytest.mark.parametrize(
+    "prefix,segments,end,preempted",
+    [(4, [(8, 12)], 12, False), (0, [(4, 8)], 8, False),
+     (12, [], 11, False), (4, [(8, 12)], 0, True)],
+)
+def test_selective_coverage_keeps_retrieve_and_store_ranges_separate(
+    monkeypatch, mock_io, prefix, segments, end, preempted
+):
+    """Use real MP bookkeeping: coverage may include holes but RETRIEVE must not."""
+    from lmcache.integration.vllm.mp_blend_client import LMCacheMPSelectiveConnector
+    from lmcache.v1.multiprocess.custom_types import (
+        CBMatchResult, CBUnifiedLookupResult, IPCCacheServerKey,
+    )
+
+    config = _config(
+        KVTransferConfig(kv_connector="LMCacheMPConnector", kv_role="kv_both")
+    )
+    config.scheduler_config.async_scheduling = False
+    monkeypatch.setattr(
+        LMCacheMPSelectiveConnector, "create_lmcache_mp_scheduler_adapter",
+        lambda self, **kwargs: mock_io.scheduler,
+    )
+    connector = LMCacheMPSelectiveConnector(config, KVConnectorRole.SCHEDULER)
+    request = _request()
+    if preempted:
+        request.status = RequestStatus.PREEMPTED
+    request.num_tokens = 13 if segments else 12
+    request.all_token_ids = list(range(request.num_tokens))
+    request.num_prompt_tokens = request.num_tokens
+    key = IPCCacheServerKey.from_token_ids(
+        "test-model", 1, None, request.all_token_ids,
+        request_id=request.request_id, end=12,
+    )
+    result = CBUnifiedLookupResult(
+        prefix, [CBMatchResult(0, b - a, a, b, b"hit") for a, b in segments]
+    )
+    mock_io.scheduler.check_lookup_result.return_value = prefix
+    mock_io.scheduler.get_blend_lookup.return_value = (key, result)
+    for _ in range(2):  # Allocation can be deferred; lookup must remain idempotent.
+        assert connector.get_num_new_matched_tokens(request, 0) == (end, False)
+        assert request.num_computed_tokens == 0
+        tracker = connector.request_trackers[request.request_id]
+        assert tracker.num_stored_tokens == (0 if preempted else prefix)
+    blocks = SimpleNamespace(get_block_ids=lambda: ([1, 2, 3, 4],))
+    connector.update_state_after_alloc(request, blocks, end)
+    output = _schedule(
+        request.request_id, request.num_tokens - end,
+        new=True, num_computed_tokens=end,
+    )
+    metadata = connector.build_connector_meta(output)
+    if preempted:
+        assert metadata.blend_scatter_tasks == []
+        assert all(entry.direction != "RETRIEVE" for entry in metadata.requests)
+        assert output.num_scheduled_tokens == {request.request_id: request.num_tokens}
+        mock_io.scheduler.maybe_submit_lookup_request.assert_not_called()
+        connector.request_finished(request, [1, 2, 3, 4])
+        return
+    task, = metadata.blend_scatter_tasks
+    assert task.computed_prefix_tokens == 0
+    assert task.prefix_hit_tokens == prefix
+    assert task.coverage_end == end
+    assert task.block_ids == [[1, 2, 3, 4]]
+    loads = [entry for entry in metadata.requests if entry.direction == "RETRIEVE"]
+    assert [(entry.op.start, entry.op.end) for entry in loads] == (
+        [(0, prefix)] if prefix else []
+    )
+    assert all(
+        entry.op.start == prefix for entry in metadata.requests
+        if entry.direction == "STORE"
+    )
+    assert output.num_scheduled_tokens == {request.request_id: request.num_tokens - end}
+    assert not connector.build_connector_meta(_schedule()).blend_scatter_tasks
+    connector.request_finished(request, [1, 2, 3, 4])
+    assert request.request_id not in connector.request_trackers

@@ -80,6 +80,12 @@ event_ipc) → (event_ipc, scatter_ran)`**
   the client degrades the request (TP-consensus).
 - Side effects: applied ranges recorded per `(request, worker)`; consumed
   read locks released stream-ordered after the scatter.
+  A source chunk may populate multiple destination ranges. Fingerprint
+  matching preserves each occurrence, while sparse prefetch and lock release
+  operate on unique source keys. Retrieve expands the unique source objects
+  back into destination order before building the scatter plan. Re-storing
+  a known source refreshes its fingerprint probe slot without allocating a
+  new compact ID, so another prefix cannot leave that source shadowed.
 
 **`store(key, instance_id, gpu_block_ids, event_ipc) → (event_ipc,
 success)`**
