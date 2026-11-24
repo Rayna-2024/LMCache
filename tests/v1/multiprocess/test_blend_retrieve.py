@@ -48,6 +48,7 @@ def _build_plan_engine_and_context(
     num_layers: int = 2,
     head_size: int = 8,
     n_heads: int = 2,
+    mla: bool = False,
 ):
     """Engine with the real ``_build_cb_retrieve_plan_flat`` bound, a fake GPU
     context with real CPU tensors, and a real ``_CBRopeState``. Kernel
@@ -96,7 +97,9 @@ def _build_plan_engine_and_context(
         for _ in range(num_groups)
     ]
     kv_buffers = {
-        (slot, group): torch.zeros(2, num_layers, spc, hidden_dim)
+        (slot, group): torch.zeros(num_layers, spc, hidden_dim)
+        if mla
+        else torch.zeros(2, num_layers, spc, hidden_dim)
         for slot in range(max_batch)
         for group in range(num_groups)
     }
@@ -119,6 +122,13 @@ def _build_plan_engine_and_context(
         cos_sin_caches=[torch.zeros(64, head_size)],
         group_to_cache=[],
     )
+    if mla:
+        fmt = lmcache_native.EngineKVFormat.NL_X_NP_X_NB_BS_ONE_HS
+        for group in gpu_context.kv_layer_groups_manager.kernel_groups:
+            group.engine_kv_format = fmt
+        gpu_context.get_engine_kv_format.side_effect = lambda g: fmt
+        rope_state.group_rot = [(head_size, head_size)]
+        rope_state.group_head_size = [head_size]
     return eng, gpu_context, rope_state, obj_bytes
 
 
@@ -143,7 +153,8 @@ def _lazy_memory_obj(obj_bytes: int, address: int):
 
 
 @native_retrieve_plan_required
-def test_native_plan_specs_stamped_and_cached():
+@pytest.mark.parametrize("mla", [False, True])
+def test_native_plan_specs_stamped_and_cached(mla: bool):
     """3 chunks, max_batch=2: per-group slot-mapping rows staged into the
     persistent device buffer and stamped into the cached invariant specs; a
     second build for the same context reuses the same spec objects (and the
@@ -151,7 +162,7 @@ def test_native_plan_specs_stamped_and_cached():
     # Third Party
     import numpy as np
 
-    eng, gpu_context, rope_state, obj_bytes = _build_plan_engine_and_context()
+    eng, gpu_context, rope_state, obj_bytes = _build_plan_engine_and_context(mla=mla)
 
     def pair(cur_st, cur_ed, old_st):
         return (

@@ -177,7 +177,8 @@ class RetrieveMixin:
         unsupported layout. ``group_specs`` covers the staged kernel groups
         in staged order; ``slot_group_buffers`` is one destination view per
         (batch slot, read object group); ``og_sizes`` is each read group's
-        per-slot byte size.
+        per-slot byte size. Packed three-dimensional staging is treated as
+        one KV plane without copying its storage.
         """
         kgm = gpu_context.kv_layer_groups_manager
         cb_group_spec = device_ops.CBGroupSpec
@@ -208,6 +209,10 @@ class RetrieveMixin:
         for group_idx in staged_kernel:
             group = kgm.kernel_groups[group_idx]
             buf0 = gpu_context.get_temp_kernel_group_buffer(0, group_idx)
+            # Packed single-plane staging omits the leading KV axis.
+            # Adding a view preserves its byte layout for native descriptors.
+            if buf0.ndim == 3:
+                buf0 = buf0.unsqueeze(0)
             gid_pos = gid_of_kernel[group_idx]
             og_base = int(
                 gpu_context.get_temp_object_group_buffer(

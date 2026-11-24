@@ -921,16 +921,21 @@ def test_explicit_cpu_nhd_layout_preserves_physical_geometry(
     assert (block_size, num_layers, hidden_dim, kv_size) == (16, 2, 576, 1)
 
 
+@pytest.mark.parametrize("replicas,shards", [(1, 1), (16, 1), (16, 2)])
 def test_engine_driven_register_sends_num_physical_slots(
     monkeypatch: pytest.MonkeyPatch,
+    replicas: int,
+    shards: int,
 ) -> None:
-    """Worker registration must describe its gathered chunk, not just tokens."""
+    """Registration preserves the gathered shape and its replicated token shards."""
+    # First Party
     # First Party
     from lmcache.v1.client import worker_transfer
     from lmcache.v1.client.worker_transfer import EngineDrivenTransferContext
     from lmcache.v1.multiprocess.custom_types import (
         RegisterEngineDrivenContextPayload,
     )
+    from lmcache.v1.multiprocess.group_view import EngineGroupInfo
 
     monkeypatch.setattr(
         worker_transfer,
@@ -958,10 +963,13 @@ def test_engine_driven_register_sends_num_physical_slots(
     context.register(
         kv_caches=_make_fused_nhd_kv_caches(),
         model_name="m",
-        world_size=1,
+        world_size=replicas,
         blocks_in_chunk=8,
         mq_timeout=1.0,
         layout_hints={"kv_layout": "NHD"},
+        engine_group_infos=[
+            EngineGroupInfo(0, (0, 1), tp_replicas=replicas, dcp_shards=shards)
+        ],
     )
 
     unregister_future = context.unregister()
@@ -969,6 +977,8 @@ def test_engine_driven_register_sends_num_physical_slots(
     payload = req_client.register_kv_cache_engine_driven_context.call_args.args[0]
     assert isinstance(payload, RegisterEngineDrivenContextPayload)
     assert payload.num_physical_slots == 128
+    assert payload.group_tp_replicas == (replicas,)
+    assert payload.group_dcp_shards == (shards,)
     assert (
         unregister_future
         is req_client.unregister_kv_cache_engine_driven_context.return_value
@@ -2805,3 +2815,36 @@ def test_engine_driven_context_shm_close_is_idempotent() -> None:
     finally:
         shm_munmap(addr, 4096)
         shm_unlink(shm_name)
+
+
+@pytest.mark.parametrize("shards", [1, 2])
+@pytest.mark.parametrize("grouped", [False, True])
+def test_engine_driven_registration_canonicalizes_replicated_lookup(
+    stub_lmcache_native: Any,
+    server_module_factory: ServerModuleFactory,
+    shards: int,
+    grouped: bool,
+) -> None:
+    """MLA lookup must ask for one object per token shard, not all TP ranks."""
+    # First Party
+    from lmcache.v1.distributed.api import ipc_key_to_object_keys
+    from lmcache.v1.multiprocess.custom_types import GroupLayout
+
+    module, _, _, ctx = server_module_factory(chunk_size=16)
+    payload = _default_register_payload()
+    payload.world_size = 16
+    payload.use_mla = True
+    payload.group_tp_replicas = (16,)
+    payload.group_dcp_shards = (shards,)
+    if grouped:
+        payload.group_layouts = [GroupLayout(2, 16, "float32", 4)]
+    module.register_kv_cache_engine_driven_context(payload)
+    desc = ctx.layout_desc_registry.find_shard_replication_desc("m", 16)
+    key = replace(_default_key(), world_size=16, worker_id=None)
+    lookup = ipc_key_to_object_keys(key, [b"chunk"], [0], desc)[0]
+    assert len(lookup) == shards
+    for rank in range(16):
+        worker = replace(key, worker_id=rank)
+        assert ipc_key_to_object_keys(worker, [b"chunk"], [0], desc)[0] == [
+            lookup[rank % shards]
+        ]
